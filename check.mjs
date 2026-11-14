@@ -133,7 +133,22 @@ const NB = '◀️ Назад';
 const texts = () => sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
 const wizard = async (city = 'Астана') => {
   const hot = city === 'Астана' ? '🔥 ' : '';
-  await press(city); assert.match(sent.at(-1).text, /Вылет: [^\n]*\n\n👉 Какой бюджет/);
+  // порядок вопросов: вылет → страна → курорт → бюджет → туристы → звёздность → рейтинг → пляж → питание → ночи → период
+  await press(city); assert.match(sent.at(-1).text, /Вылет: [^\n]*\n\n👉 Выберите страну/);
+  const countryBtns = texts().filter(t => t !== NB);
+  assert.ok(!countryBtns.some(c => ['Чехия', 'Франция', 'Сербия', 'Словения', 'Венгрия', 'Россия', 'Австрия', 'Италия', 'Сингапур'].includes(c.replace('🔥 ', '')))); // скрытые страны не показываются
+  if (city === 'Астана') assert.equal(countryBtns.length, 35); // «Любая страна» + 43 страны Tourvisor без девяти скрытых
+  else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
+  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 8), [hot + 'Таиланд', hot + 'ОАЭ', 'Турция', 'Египет', 'Китай', 'Вьетнам', 'Азербайджан']); // 🔥 — есть горящие туры
+  await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорты/);
+  // курорты: сначала с горящими (в проверке 🔥 Пхукет), затем популярные по списку, затем остальные; галочки, до трёх
+  assert.deepEqual(texts(), ['⬜ ' + hot + 'Пхукет', '⬜ Паттайя', '⬜ Самуи', '⬜ Краби', '⬜ Чианг Май', 'Готово ▶', 'Любой курорт', NB]);
+  assert.match(sent.at(-1).text, /Выберите курорты — до 3, выбрано 0 \(🔥 — есть горящие туры\)/);
+  await press('⬜ ' + hot + 'Пхукет'); assert.match(sent.at(-1).text, /выбрано 1/);
+  await press('⬜ Самуи'); assert.match(sent.at(-1).text, /выбрано 2/);
+  assert.deepEqual(texts().slice(0, 3), ['✅ ' + hot + 'Пхукет', '⬜ Паттайя', '✅ Самуи']);
+  await press('✅ Самуи'); assert.match(sent.at(-1).text, /выбрано 1/); // отметку можно снять
+  await press('Готово ▶'); assert.match(sent.at(-1).text, /Курорт: Пхукет\n\n👉 Какой бюджет/);
   assert.deepEqual(texts(), ['500–800 тыс. ₸', '800 тыс. – 1,2 млн ₸', '1,2–2 млн ₸', '2–2,5 млн ₸', '2,5–3 млн ₸', 'от 3 млн ₸', 'Любой бюджет', NB]); // линейка бюджета
   await press('Любой бюджет'); assert.match(sent.at(-1).text, /Бюджет: любой\n\n👉 Сколько взрослых/);
   await press('2'); assert.match(sent.at(-1).text, /Сколько детей/);
@@ -147,30 +162,14 @@ const wizard = async (city = 'Астана') => {
   assert.deepEqual(texts(), ['⬜ Любой пляж', '⬜ Первая береговая линия', '⬜ Песчаный пляж', 'Готово ▶', NB]);
   await press('Готово ▶'); assert.match(sent.at(-1).text, /Питание/); // ничего не отмечено — любой пляж
   assert.deepEqual(texts(), ['Любое', 'Без питания', 'BB - Только завтрак', 'HB - Завтрак, Ужин', 'FB - Полный Пансион', 'AI - Все Включено', 'UAI - Ультра Все Включено', NB]);
-  await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Выберите страну/);
-  const countryBtns = texts().filter(t => t !== NB);
-  assert.ok(!countryBtns.some(c => ['Чехия', 'Франция', 'Сербия', 'Словения', 'Венгрия', 'Россия', 'Австрия', 'Италия', 'Сингапур'].includes(c.replace('🔥 ', '')))); // скрытые страны не показываются
-  if (city === 'Астана') assert.equal(countryBtns.length, 35); // «Любая страна» + 43 страны Tourvisor без девяти скрытых
-  else if (tvMode === 'ok') assert.deepEqual(countryBtns, ['Любая страна', 'Таиланд', 'Казахстан']); // только страны этого аэропорта
-  if (city === 'Астана') assert.deepEqual(countryBtns.slice(1, 8), [hot + 'Таиланд', hot + 'ОАЭ', 'Турция', 'Египет', 'Китай', 'Вьетнам', 'Азербайджан']); // 🔥 — есть горящие туры (только вылет из Астаны)
-  await press(hot + 'Таиланд'); assert.match(sent.at(-1).text, /Выберите курорты/);
-  // курорты как в Tourvisor: «Любой» + курорты страны без мелких районов (Патонг — район Пхукета)
-  // 🔥 у курорта — по нему есть горящие туры (в проверке только вылет из Астаны)
-  // курорты: сначала с горящими (в проверке 🔥 Пхукет), затем популярные по списку, затем остальные; галочки, до трёх
-  assert.deepEqual(texts(), ['⬜ ' + hot + 'Пхукет', '⬜ Паттайя', '⬜ Самуи', '⬜ Краби', '⬜ Чианг Май', 'Готово ▶', 'Любой курорт', NB]);
-  assert.match(sent.at(-1).text, /Выберите курорты — до 3, выбрано 0 \(🔥 — есть горящие туры\)/);
-  await press('⬜ ' + hot + 'Пхукет'); assert.match(sent.at(-1).text, /выбрано 1/);
-  await press('⬜ Самуи'); assert.match(sent.at(-1).text, /выбрано 2/);
-  assert.deepEqual(texts().slice(0, 3), ['✅ ' + hot + 'Пхукет', '⬜ Паттайя', '✅ Самуи']);
-  await press('✅ Самуи'); assert.match(sent.at(-1).text, /выбрано 1/); // отметку можно снять
-  await press('Готово ▶'); assert.match(sent.at(-1).text, /Курорт: Пхукет[\s\S]*Сколько ночей/);
+  await press('BB - Только завтрак'); assert.match(sent.at(-1).text, /Сколько ночей/);
   await press('6–9 ночей'); assert.match(sent.at(-1).text, /Когда хотите лететь/);
   await press('Ближайшие 2 недели');
 };
 await wizard();
 
 // итог: запрос → «ищу» (удаляется) → 3 подборки по рейтингу → горящий тур → кнопка заявки
-assert.match(sent[1].text, /Вылет: Астана\nБюджет: любой\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nЗвёздность: любая\nРейтинг: любой\nПляж: любой\nПитание: BB - Только завтрак \(или лучше\)\nСтрана: Таиланд\nКурорт: Пхукет\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
+assert.match(sent[1].text, /Вылет: Астана\nСтрана: Таиланд\nКурорт: Пхукет\nБюджет: любой\nТуристы: 2 взр\. \+ 1 ребёнок \(5 лет\)\nЗвёздность: любая\nРейтинг: любой\nПляж: любой\nПитание: BB - Только завтрак \(или лучше\)\nНочей: 6–9\nПериод: Ближайшие 2 недели/);
 assert.match(sent[2].text, /🟦{10}\n👇 <b>ПОСЛЕДНЯЯ ПОДБОРКА НИЖЕ<\/b>/u); // синий разделитель перед каждой свежей подборкой
 assert.match(sent[3].text, /Ищу туры/);
 assert.equal(sent[4].method, 'deleteMessage');
@@ -198,7 +197,7 @@ assert.ok(!sent.some(m => JSON.stringify(m.reply_markup || '').includes('Все 
 const photos = sent.filter(m => m.method === 'sendPhoto');
 assert.deepEqual(photos.map(m => m.caption.match(/Тур \d/)[0]), ['Тур 2']);
 assert.deepEqual(photos[0].reply_markup.inline_keyboard[0].map(b => b.url), ['https://tourcart.ru/#tvofferid=2', 'https://wa.me/1?text=' + encodeURIComponent('Здравствуйте! Хочу забронировать тур: Тур 2')]);
-assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nБюджет: любой\nТуристы: 2 взр\./);
+assert.match(decodeURIComponent(sent.at(-1).reply_markup.inline_keyboard[0][0].url), /Подберите, пожалуйста, тур\.\nВылет: Астана\nСтрана: Таиланд\nКурорт: Пхукет\nБюджет: любой\nТуристы: 2 взр\./);
 assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard.flat().map(b => b.text), ['📩 Отправить запрос менеджеру']); // кнопки «Подобрать тур» здесь нет
 assert.ok(!/Подобрать тур/.test(sent.at(-1).text));
 // второй поиск идёт с фильтром Tourvisor «Только для взрослых» (services=48): в общую выдачу самых дешёвых отелей такие отели почти не попадают
@@ -445,13 +444,22 @@ await Promise.all(pending.splice(0));
 // «Назад» на каждом шаге: ответы до него сохраняются, заново начинать не нужно
 kv.set('kb2:900', '1');
 const step9 = async data => { sent.length = 0; await post('/tg', { callback_query: { id: 'b', data, message: { chat: { id: 900 }, message_id: 5 } } }, TG); return sent.find(m => m.method === 'editMessageText'); };
-const btn9 = (m, label) => m.reply_markup.inline_keyboard.flat().find(b => b.text === label);
-const go9 = async (m, label) => { const b = btn9(m, label); assert.ok(b, 'нет кнопки ' + label); return step9(b.callback_data); };
+const norm9 = t => t.replace('🔥 ', ''); // горящие в проверке зависят от данных — значок 🔥 при поиске кнопки не учитываем
+const btn9 = (m, label) => m.reply_markup.inline_keyboard.flat().find(b => norm9(b.text) === norm9(label));
+const go9 = async (m, label) => { const b = btn9(m, label); assert.ok(b, 'нет кнопки ' + label + ' среди: ' + m.reply_markup.inline_keyboard.flat().map(x => x.text).join(' / ') + ' | ' + m.text); return step9(b.callback_data); };
 let m9 = await step9('w:::::::::');
 assert.ok(!btn9(m9, NB)); // на первом шаге (аэропорт) назад не нужен
-m9 = await go9(m9, 'Астана'); assert.match(m9.text, /Какой бюджет/);
-m9 = await go9(m9, NB); assert.match(m9.text, /Из какого аэропорта/); // из бюджета назад к аэропорту
+m9 = await go9(m9, 'Астана'); assert.match(m9.text, /Выберите страну/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Из какого аэропорта/); // из выбора страны назад к аэропорту
 m9 = await go9(m9, 'Астана');
+m9 = await go9(m9, '🔥 Таиланд'); assert.match(m9.text, /Выберите курорты/);
+m9 = await go9(m9, NB); assert.match(m9.text, /Выберите страну/); // из курортов назад к стране
+m9 = await go9(m9, 'Любая страна'); assert.match(m9.text, /Какой бюджет/); // у «любой страны» курортов нет — шаг пропущен
+m9 = await go9(m9, NB); assert.match(m9.text, /Выберите страну/); // из бюджета сразу к стране, не зависает
+m9 = await go9(m9, '🔥 Таиланд');
+m9 = await go9(m9, '⬜ 🔥 Пхукет'); m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Курорт: Пхукет\n\n👉 Какой бюджет/);
+m9 = await go9(m9, NB); assert.match(m9.text, /выбрано 0/); // из бюджета назад к курортам, выбор сброшен
+m9 = await go9(m9, 'Любой курорт'); assert.match(m9.text, /Курорт: любой\n\n👉 Какой бюджет/);
 m9 = await go9(m9, '500–800 тыс. ₸'); assert.match(m9.text, /Бюджет: 500–800 тыс\. ₸\n\n👉 Сколько взрослых/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Какой бюджет/); // назад к бюджету
 m9 = await go9(m9, 'Любой бюджет');
@@ -503,12 +511,9 @@ m9 = await go9(m9, '⬜ Песчаный пляж');
 m9 = await go9(m9, 'Готово ▶'); assert.match(m9.text, /Пляж: песчаный пляж\n[\s\S]*Питание/);
 m9 = await go9(m9, NB);
 m9 = await go9(m9, 'Готово ▶');
-m9 = await go9(m9, 'Любое'); assert.match(m9.text, /Выберите страну/);
+m9 = await go9(m9, 'Любое'); assert.match(m9.text, /Сколько ночей/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Питание/);
 m9 = await go9(m9, 'Любое');
-m9 = await go9(m9, 'Любая страна'); assert.match(m9.text, /Сколько ночей/); // курортов нет — шаг пропущен
-m9 = await go9(m9, NB); assert.match(m9.text, /Выберите страну/); // назад из «ночей» сразу к стране, не зависает
-m9 = await go9(m9, 'Любая страна');
 m9 = await go9(m9, '6–9 ночей'); assert.match(m9.text, /Когда хотите лететь/);
 m9 = await go9(m9, NB); assert.match(m9.text, /Сколько ночей/);
 

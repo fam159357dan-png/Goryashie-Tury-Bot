@@ -432,6 +432,8 @@ function fits(w, h) {
 }
 // бюджет → границы цены; null — любой
 const budgetRange = w => (w.bd && w.bd !== '*' && BUDGETS[+w.bd] ? BUDGETS[+w.bd] : null);
+// выбор страны сбрасывает курорты прежней страны (иначе после «Назад» шаг курортов пропускался)
+const pickCountry = (w, text, v) => ({ text, callback_data: encode({ ...w, c: v, r: '' }) });
 const pick = (w, field, value) => ({ text: value.text, callback_data: encode({ ...w, [field]: value.v }) });
 const rows = (btns, per) => { const r = []; for (let i = 0; i < btns.length; i += per) r.push(btns.slice(i, i + per)); return r; };
 const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : 'детей');
@@ -439,14 +441,14 @@ const kidsWord = n => (n === 1 ? 'ребёнок' : n < 5 ? 'ребёнка' : '
 function summary(w, data, now) {
   const lines = [];
   if (w.d) lines.push('Вылет: ' + DEPARTURES[+w.d][0]);
+  if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
+  if (rDone(w) && w.c !== '*') lines.push('Курорт: ' + (w.r === '*' ? 'любой' : regionNames(w).join(', ') || '—'));
   if (w.bd) lines.push('Бюджет: ' + (w.bd === '*' ? 'любой' : BUDGETS[+w.bd][0]));
   if (w.a) lines.push(`Туристы: ${w.a} взр.` + (+w.k ? ` + ${w.k} ${kidsWord(+w.k)}` + (w.ages.length ? ` (${w.ages.map(a => (a === '0' ? 'до 2 лет' : a + (['2', '3', '4'].includes(a) ? ' года' : ' лет'))).join(', ')})` : '') : ''));
   if (stDone(w)) lines.push('Звёздность: ' + starText(w.st));
   if (rtDone(w)) lines.push('Рейтинг: ' + ratingText(w.rt));
   if (beachDone(w)) lines.push('Пляж: ' + beachText(w));
   if (w.f) lines.push('Питание: ' + (w.f === '*' ? 'любое' : MEALS[+w.f] + (+w.f > 0 ? ' (или лучше)' : '')));
-  if (w.c) lines.push('Страна: ' + (w.c === '*' ? 'любая' : countriesOf(data)[+w.c] || '—'));
-  if (rDone(w) && w.c !== '*') lines.push('Курорт: ' + (w.r === '*' ? 'любой' : regionNames(w).join(', ') || '—'));
   if (w.n) lines.push('Ночей: ' + NIGHTS[+w.n][0].replace(' ночей', ''));
   if (w.p) lines.push('Период: ' + periods(now)[+w.p][0]);
   return lines.join('\n');
@@ -459,9 +461,32 @@ const back = (w, prev) => [{ text: '◀️ Назад', callback_data: encode(pr
 function step(w, data, now) {
   const head = (summary(w, data, now) ? summary(w, data, now) + '\n\n' : '') + '👉 ';
   if (!w.d) return { text: head + 'Из какого аэропорта вылет?', kb: rows(DEPARTURES.map(([name], i) => pick(w, 'd', { text: name, v: String(i) })), 2) };
+  if (!w.c) {
+    // 🔥 — по этой стране сейчас есть горящие туры
+    const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
+    const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
+    const rank = ([c, i]) => (hot.has(c) ? 0 : i < POPULAR_COUNTRIES ? 1 : 2); // сначала с горящими, потом популярные, потом остальные (внутри — по порядку списка)
+    const btns = COUNTRIES.map((c, i) => [c, i]).filter(([c]) => !HIDDEN_COUNTRIES.has(c) && !(ok.length && !ok.includes(COUNTRY_IDS[c]))).sort((a, b) => rank(a) - rank(b) || a[1] - b[1])
+      .map(([c, i]) => pickCountry(w, (hot.has(c) ? '🔥 ' : '') + c, String(i)));
+    return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pickCountry(w, 'Любая страна', '*')], ...rows(btns, 3), back(w, { ...w, d: '' })] };
+  }
+  if (!rDone(w)) {
+    const regs = w.c === '*' ? [] : REGIONS.get(countryId(w)) || [];
+    if (!regs.length) return step({ ...w, r: '*' }, data, now); // курортов нет — шаг пропускаем
+    // 🔥 — по этому курорту сейчас есть горящие туры (название курорта ищем в тексте тура, как в matches)
+    const hotTours = data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0] && t.country === COUNTRIES[+w.c]);
+    const isHot = name => hotTours.some(t => (t.title + ' ' + t.descr).toLowerCase().includes(name.toLowerCase().slice(0, 5)));
+    const cur = rDraft(w); // отмеченные курорты (не больше трёх)
+    const flipR = id => 't' + (cur.includes(id) ? cur.filter(x => x !== id) : cur.length < MAX_RESORTS ? [...cur, id] : cur).join('.');
+    return {
+      text: head + `Выберите курорты — до ${MAX_RESORTS}, выбрано ${cur.length} (🔥 — есть горящие туры), затем «Готово»:`,
+      kb: [...rows(orderResorts(COUNTRIES[+w.c], regs, isHot).map(([id, name]) => ({ text: (cur.includes(String(id)) ? '✅ ' : '⬜ ') + (isHot(name) ? '🔥 ' : '') + name, callback_data: encode({ ...w, r: flipR(String(id)) }) })), 2),
+        [{ text: 'Готово ▶', callback_data: encode({ ...w, r: cur.join('.') || '*' }) }, pick(w, 'r', { text: 'Любой курорт', v: '*' })], back(w, { ...w, c: '' })],
+    };
+  }
   if (!w.bd) return {
     text: head + 'Какой бюджет на тур? (цена за всех туристов)',
-    kb: [...rows(BUDGETS.map((b, i) => pick(w, 'bd', { text: b[0], v: String(i) })), 2), [pick(w, 'bd', { text: 'Любой бюджет', v: '*' })], back(w, { ...w, d: '' })],
+    kb: [...rows(BUDGETS.map((b, i) => pick(w, 'bd', { text: b[0], v: String(i) })), 2), [pick(w, 'bd', { text: 'Любой бюджет', v: '*' })], back(w, w.c !== '*' && (REGIONS.get(countryId(w)) || []).length ? { ...w, r: '' } : { ...w, c: '' })], // у страны нет списка курортов (шаг пропущен) — назад сразу к стране
   };
   if (!w.a) return { text: head + 'Сколько взрослых?', kb: [...rows(['1', '2', '3', '4'].map(v => pick(w, 'a', { text: v, v })), 4), back(w, { ...w, bd: '' })] };
   if (!w.k) return { text: head + 'Сколько детей?', kb: [...rows(['0', '1', '2', '3'].map(v => pick(w, 'k', { text: v === '0' ? 'Без детей' : v, v })), 4), back(w, { ...w, a: '' })] };
@@ -508,30 +533,7 @@ function step(w, data, now) {
     text: head + 'Питание (подберём это или лучше):',
     kb: [[pick(w, 'f', { text: 'Любое', v: '*' })], ...rows(MEALS.map((m, i) => pick(w, 'f', { text: m, v: String(i) })), 2), back(w, { ...w, by: '' })],
   };
-  if (!w.c) {
-    // 🔥 — по этой стране сейчас есть горящие туры
-    const hot = new Set(data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0]).map(t => t.country)); // горящие из выбранного города
-    const ok = AVAIL.get(depId(w)) || []; // пусто — список не загрузился, показываем все
-    const rank = ([c, i]) => (hot.has(c) ? 0 : i < POPULAR_COUNTRIES ? 1 : 2); // сначала с горящими, потом популярные, потом остальные (внутри — по порядку списка)
-    const btns = COUNTRIES.map((c, i) => [c, i]).filter(([c]) => !HIDDEN_COUNTRIES.has(c) && !(ok.length && !ok.includes(COUNTRY_IDS[c]))).sort((a, b) => rank(a) - rank(b) || a[1] - b[1])
-      .map(([c, i]) => pick(w, 'c', { text: (hot.has(c) ? '🔥 ' : '') + c, v: String(i) }));
-    return { text: head + 'Выберите страну (🔥 — есть горящие туры):', kb: [[pick(w, 'c', { text: 'Любая страна', v: '*' })], ...rows(btns, 3), back(w, { ...w, f: '' })] };
-  }
-  if (!rDone(w)) {
-    const regs = w.c === '*' ? [] : REGIONS.get(countryId(w)) || [];
-    if (!regs.length) return step({ ...w, r: '*' }, data, now); // курортов нет — шаг пропускаем
-    // 🔥 — по этому курорту сейчас есть горящие туры (название курорта ищем в тексте тура, как в matches)
-    const hotTours = data.items.filter(t => depOf(t) === DEPARTURES[+w.d][0] && t.country === COUNTRIES[+w.c]);
-    const isHot = name => hotTours.some(t => (t.title + ' ' + t.descr).toLowerCase().includes(name.toLowerCase().slice(0, 5)));
-    const cur = rDraft(w); // отмеченные курорты (не больше трёх)
-    const flipR = id => 't' + (cur.includes(id) ? cur.filter(x => x !== id) : cur.length < MAX_RESORTS ? [...cur, id] : cur).join('.');
-    return {
-      text: head + `Выберите курорты — до ${MAX_RESORTS}, выбрано ${cur.length} (🔥 — есть горящие туры), затем «Готово»:`,
-      kb: [...rows(orderResorts(COUNTRIES[+w.c], regs, isHot).map(([id, name]) => ({ text: (cur.includes(String(id)) ? '✅ ' : '⬜ ') + (isHot(name) ? '🔥 ' : '') + name, callback_data: encode({ ...w, r: flipR(String(id)) }) })), 2),
-        [{ text: 'Готово ▶', callback_data: encode({ ...w, r: cur.join('.') || '*' }) }, pick(w, 'r', { text: 'Любой курорт', v: '*' })], back(w, { ...w, c: '' })],
-    };
-  }
-  if (!w.n) return { text: head + 'Сколько ночей?', kb: [...rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2), back(w, w.c !== '*' && (REGIONS.get(countryId(w)) || []).length ? { ...w, r: '' } : { ...w, c: '' })] }; // у страны нет списка курортов (шаг пропущен) — назад сразу к стране
+  if (!w.n) return { text: head + 'Сколько ночей?', kb: [...rows(NIGHTS.map((n, i) => pick(w, 'n', { text: n[0], v: String(i) })), 2), back(w, { ...w, f: '' })] };
   if (!w.p) return { text: head + 'Когда хотите лететь?', kb: [...rows(periods(now).map((p, i) => pick(w, 'p', { text: p[0], v: String(i) })), 2), back(w, { ...w, n: '' })] };
   return null;
 }
